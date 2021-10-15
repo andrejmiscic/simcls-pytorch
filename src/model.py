@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from enum import Enum
 from typing import Union, Tuple, List
 
@@ -14,19 +15,33 @@ class GeneratorType(Enum):
     Pegasus = 1
 
 
+@dataclass
+class GeneratorParameters:
+    num_return_seqs: int = 16
+    num_beam_groups: int = 16
+    num_beams: int = 16
+    no_repeat_ngram_n: int = 3
+    diversity_penalty: float = 1.
+    length_penalty: float = 2.
+
+
 class CandidateGenerator:
     """
         CandidateGenerator is not trainable, it's just a wrapper around a pretrained model for summarization.
     """
 
-    def __init__(self, generator_type: Union[str, GeneratorType], path: str, num_return_seqs: int = 16,
-                 num_beam_groups: int = 16, num_beams: int = 16, no_repeat_ngram_n: int = 3,
-                 diversity_penalty: float = 1., length_penalty: float = 2., device: torch.device = None) -> None:
+    predefined_parameters = {
+        "facebook/bart-large-cnn": GeneratorParameters(),
+        "google/pegasus-xsum": GeneratorParameters(num_return_seqs=4, num_beam_groups=4, num_beams=4),
+        "google/pegasus-billsum": GeneratorParameters(length_penalty=1.25),
+    }
+    default_parameters = GeneratorParameters()
+
+    def __init__(self, generator_type: Union[str, GeneratorType], path: str,
+                 device: torch.device = None, **kwargs) -> None:
         super(CandidateGenerator, self).__init__()
 
-        self.num_return_seqs, self.num_beam_groups, self.num_beams, self.no_repeat_ngram_n = \
-            num_return_seqs, num_beam_groups, num_beams, no_repeat_ngram_n
-        self.diversity_penalty, self.length_penalty = diversity_penalty, length_penalty
+        self.parameters = self.__get_params(path, **kwargs)
         self.device = device if device is not None else torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         self.generator_type = GeneratorType[generator_type] if type(generator_type) == str else generator_type
@@ -35,31 +50,49 @@ class CandidateGenerator:
         self.generator = self.generator.eval().to(self.device)
 
     @torch.no_grad()
-    def forward(self, docs: List[str], **kwargs) -> List[List[str]]:
+    def forward(self, docs: List[str]) -> List[List[str]]:
 
         inputs = self.tokenizer(docs, padding="longest", truncation=True, return_tensors="pt")
 
         candidates_input_ids = self.generator.generate(
             input_ids=inputs["input_ids"].to(self.device), attention_mask=inputs["attention_mask"].to(self.device),
             early_stopping=True,
-            num_beams=kwargs["num_beams"] if "num_beams" in kwargs else self.num_beams,
-            length_penalty=kwargs["length_penalty"] if "length_penalty" in kwargs else self.length_penalty,
-            no_repeat_ngram_size=kwargs["no_repeat_ngram_n"] if "no_repeat_ngram_n" in kwargs else self.no_repeat_ngram_n,
-            num_return_sequences=kwargs["num_return_seqs"] if "num_return_seqs" in kwargs else self.num_return_seqs,
-            num_beam_groups=kwargs["num_beam_groups"] if "num_beam_groups" in kwargs else self.num_beam_groups,
-            diversity_penalty=kwargs["diversity_penalty"] if "diversity_penalty" in kwargs else self.diversity_penalty,
+            num_beams=self.parameters.num_beams,
+            length_penalty=self.parameters.length_penalty,
+            no_repeat_ngram_size=self.parameters.no_repeat_ngram_n,
+            num_return_sequences=self.parameters.num_return_seqs,
+            num_beam_groups=self.parameters.num_beam_groups,
+            diversity_penalty=self.parameters.diversity_penalty,
         )
 
         batched_cands = self.tokenizer.batch_decode(candidates_input_ids, skip_special_tokens=True)
         cands_per_doc = len(batched_cands) // len(docs)
         candidates = [batched_cands[(i * cands_per_doc):((i + 1) * cands_per_doc)] for i in range(len(docs))]
+
         return candidates
 
     def __call__(self, docs: List[str], **kwargs) -> List[List[str]]:
         return self.forward(docs, **kwargs)
 
-    def __get_generator_and_tokenizer(self, path: str = None) -> \
-            Tuple[PreTrainedModel, PreTrainedTokenizer]:
+    def __get_params(self, path: str, num_return_seqs: int = None, num_beam_groups: int = None, num_beams: int = None,
+                     no_repeat_ngram_n: int = None, diversity_penalty: float = None, length_penalty: float = None) \
+            -> GeneratorParameters:
+
+        default_params = self.predefined_parameters[path] if path in self.predefined_parameters \
+            else self.default_parameters
+
+        parameters = GeneratorParameters(
+            num_return_seqs=num_return_seqs if num_return_seqs is not None else default_params.num_return_seqs,
+            num_beam_groups=num_beam_groups if num_beam_groups is not None else default_params.num_beam_groups,
+            num_beams=num_beams if num_beams is not None else default_params.num_beams,
+            no_repeat_ngram_n=no_repeat_ngram_n if no_repeat_ngram_n is not None else default_params.no_repeat_ngram_n,
+            diversity_penalty=diversity_penalty if diversity_penalty is not None else default_params.diversity_penalty,
+            length_penalty=length_penalty if length_penalty is not None else default_params.length_penalty,
+        )
+
+        return parameters
+
+    def __get_generator_and_tokenizer(self, path: str = None) -> Tuple[PreTrainedModel, PreTrainedTokenizer]:
 
         if self.generator_type == GeneratorType.Bart:
             return BartForConditionalGeneration.from_pretrained(path), BartTokenizer.from_pretrained(path)
@@ -116,13 +149,20 @@ class SimCLS:
         SimCLS is not meant for training, rather it's a wrapper around summary generator and scorer for easier usage.
     """
 
+    predefined_max_lens = {
+        "facebook/bart-large-cnn": 120,
+        "google/pegasus-xsum": 80,
+        "google/pegasus-billsum": 256,
+    }
+    default_max_len = 128
+
     def __init__(self, generator_type: Union[str, GeneratorType], generator_path: str, scorer_path: str,
-                 scorer_tokenizer_path: str = None, candidate_max_len: int = 120, **kwargs) -> None:
+                 scorer_tokenizer_path: str = None, candidate_max_len: int = None, **kwargs) -> None:
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         self.generator_type = GeneratorType[generator_type] if type(generator_type) == str else generator_type
-        self.candidate_max_len = candidate_max_len
+        self.candidate_max_len = self.__get_max_len(generator_path, candidate_max_len)
 
         self.candidate_generator = CandidateGenerator(generator_type, generator_path, device=self.device, **kwargs)
 
@@ -130,10 +170,10 @@ class SimCLS:
         tok_path = scorer_tokenizer_path if scorer_tokenizer_path else scorer_path
         self.scorer_tokenizer = RobertaTokenizer.from_pretrained(tok_path)
 
-    def forward(self, docs: Union[str, List[str]], **kwargs) -> Union[str, List[str]]:
+    def forward(self, docs: Union[str, List[str]]) -> Union[str, List[str]]:
 
         docs = [docs] if type(docs) == str else docs
-        candidates = self.candidate_generator(docs, **kwargs)
+        candidates = self.candidate_generator(docs)
 
         # lower-case inputs as instructed in the paper (roberta-base is case-sensitive)
         docs = [doc.lower() for doc in docs]
@@ -162,11 +202,17 @@ class SimCLS:
     def __call__(self, docs: Union[str, List[str]]) -> Union[str, List[str]]:
         return self.forward(docs)
 
-    def __get_generator_tokenizer(self, generator_path) -> PreTrainedTokenizer:
+    def __get_generator_tokenizer(self, generator_path: str) -> PreTrainedTokenizer:
         if self.generator_type == GeneratorType.Bart:
             return BartTokenizer.from_pretrained(generator_path)
         elif self.generator_type == GeneratorType.Pegasus:
             return PegasusTokenizer.from_pretrained(generator_path)
         else:
             raise NotImplementedError(f"Generator type: {self.generator_type} not supported.")
+
+    def __get_max_len(self, gen_path: str, candidate_max_len: int) -> int:
+        if candidate_max_len is not None:
+            return candidate_max_len
+        else:
+            return self.predefined_max_lens[gen_path] if gen_path in self.predefined_max_lens else self.default_max_len
 
