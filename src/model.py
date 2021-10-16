@@ -187,10 +187,10 @@ class SimCLS:
         candidates_attention_mask = candidate_inputs["attention_mask"].reshape(num_docs, num_candidates_per_doc, -1)
 
         with torch.no_grad():
-            scores = self.candidate_scorer(doc_input_ids=doc_inputs["input_ids"],
-                                           doc_att_mask=doc_inputs["attention_mask"],
-                                           candidates_input_ids=candidates_input_ids,
-                                           candidates_att_mask=candidates_attention_mask)
+            scores = self.candidate_scorer(doc_input_ids=doc_inputs["input_ids"].to(self.device),
+                                           doc_att_mask=doc_inputs["attention_mask"].to(self.device),
+                                           candidates_input_ids=candidates_input_ids.to(self.device),
+                                           candidates_att_mask=candidates_attention_mask.to(self.device))
             scores = scores.cpu().numpy()
 
         indices = np.argmax(scores, axis=-1)
