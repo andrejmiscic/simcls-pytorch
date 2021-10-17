@@ -37,7 +37,7 @@ All the models are available at Hugging Face Hub for easy usage:
 |---------|---------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------|
 | CNNDM   | [facebook/bart-large-cnn](https://huggingface.co/facebook/bart-large-cnn) | [andrejmiscic/simcls-scorer-cnndm](https://huggingface.co/andrejmiscic/simcls-scorer-cnndm)     |
 | XSum    | [google/pegasus-xsum](https://huggingface.co/google/pegasus-xsum)         | [andrejmiscic/simcls-scorer-xsum](https://huggingface.co/andrejmiscic/simcls-scorer-xsum)       |
-| BillSum | [google/pegasus-billsum](https://huggingface.co/google/pegasus-bills)     | [andrejmiscic/simcls-scorer-billsum](https://huggingface.co/andrejmiscic/simcls-scorer-billsum) |
+| BillSum | [google/pegasus-billsum](https://huggingface.co/google/pegasus-billsum)     | [andrejmiscic/simcls-scorer-billsum](https://huggingface.co/andrejmiscic/simcls-scorer-billsum) |
 
 
 ## Reproducibility
